@@ -10,4 +10,4 @@ df['anomaly'] = model.predict(df[features])
 df['anomaly'] = df['anomaly'].map({1: 'Normal', -1: 'Anomaly'})
 
 df.to_csv("annotated_output.csv", index=False)
-print("✅ Anomaly detection complete! Output saved to annotated_output.csv")
+print(" Anomaly detection complete! Output saved to annotated_output.csv")
