@@ -2,6 +2,10 @@
 
 This project uses unsupervised Machine Learning (Isolation Forest) to detect abnormal driving patterns from real-time or recorded telemetry logs. It’s designed as part of the Tata Technologies InnoVent Hackathon under the track **“AI-powered virtual testing environments for SDVs”**.
 
+
+
+scatter plot with red anomalies and green normal points
+
 ---
 
 ## Features
