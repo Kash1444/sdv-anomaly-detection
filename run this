@@ -1,0 +1,7 @@
+## cd "c:\Users\Owner\Desktop\Machine Learning Journey\TATA\sdv_ml_project"
+## python -m streamlit run streamlit_dashboard.py
+
+###   You can now view your Streamlit app in your browser.
+
+  # Local URL: http://localhost:8501
+  # Network URL: http://192.168.1.215:8501
