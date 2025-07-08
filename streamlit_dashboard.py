@@ -11,20 +11,14 @@ import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import joblib
 import io
 from datetime import datetime
 import warnings
+import time
+from sklearn.ensemble import IsolationForest
+from sklearn.neighbors import LocalOutlierFactor
+from sklearn.preprocessing import StandardScaler
 warnings.filterwarnings('ignore')
-
-# Import our detection functions
-from ml_detect import (
-    load_and_explore_data, 
-    feature_engineering, 
-    ensemble_anomaly_detection,
-    preprocess_features,
-    visualize_anomalies
-)
 
 # Set page config
 st.set_page_config(
@@ -67,6 +61,120 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def generate_sample_data(n_samples=1000):
+    """Generate synthetic driving data"""
+    np.random.seed(42)
+    
+    # Normal driving patterns
+    normal_samples = int(n_samples * 0.95)
+    
+    # Speed: mostly 30-80 km/h
+    speed_normal = np.random.normal(50, 15, normal_samples)
+    speed_normal = np.clip(speed_normal, 0, 120)
+    
+    # Steering: mostly small values
+    steering_normal = np.random.normal(0, 0.1, normal_samples)
+    steering_normal = np.clip(steering_normal, -1, 1)
+    
+    # Brake: mostly low values
+    brake_normal = np.random.exponential(0.05, normal_samples)
+    brake_normal = np.clip(brake_normal, 0, 1)
+    
+    # Anomalous patterns
+    anomaly_samples = n_samples - normal_samples
+    
+    # Speed anomalies: very high or very low
+    speed_anomaly = np.concatenate([
+        np.random.normal(120, 10, anomaly_samples//2),
+        np.random.normal(10, 5, anomaly_samples//2)
+    ])
+    speed_anomaly = np.clip(speed_anomaly, 0, 150)
+    
+    # Steering anomalies: extreme values
+    steering_anomaly = np.random.choice([-1, 1], anomaly_samples) * np.random.uniform(0.7, 1.0, anomaly_samples)
+    
+    # Brake anomalies: hard braking
+    brake_anomaly = np.random.uniform(0.7, 1.0, anomaly_samples)
+    
+    # Combine data
+    speed = np.concatenate([speed_normal, speed_anomaly])
+    steering = np.concatenate([steering_normal, steering_anomaly])
+    brake = np.concatenate([brake_normal, brake_anomaly])
+    
+    # Shuffle
+    indices = np.random.permutation(n_samples)
+    
+    df = pd.DataFrame({
+        'pc_speed': speed[indices],
+        'pc_steering': steering[indices],
+        'pc_brake': brake[indices]
+    })
+    
+    return df
+
+def feature_engineering(df):
+    """Create enhanced features"""
+    df_processed = df.copy()
+    
+    # Speed categories
+    df_processed['speed_category'] = pd.cut(df_processed['pc_speed'], 
+                                          bins=[0, 30, 60, 90, 200], 
+                                          labels=['Low', 'Medium', 'High', 'Very High'])
+    df_processed['speed_category_encoded'] = df_processed['speed_category'].cat.codes
+    
+    # Aggressive behaviors
+    df_processed['aggressive_steering'] = (abs(df_processed['pc_steering']) > 0.5).astype(int)
+    df_processed['hard_braking'] = (df_processed['pc_brake'] > 0.7).astype(int)
+    
+    # Ratios
+    df_processed['speed_steering_ratio'] = df_processed['pc_speed'] / (abs(df_processed['pc_steering']) + 0.001)
+    df_processed['brake_intensity'] = df_processed['pc_brake'] * df_processed['pc_speed']
+    
+    # Rolling features
+    df_processed['speed_rolling_mean'] = df_processed['pc_speed'].rolling(window=5, min_periods=1).mean()
+    df_processed['speed_rolling_std'] = df_processed['pc_speed'].rolling(window=5, min_periods=1).std().fillna(0)
+    
+    # Z-scores
+    df_processed['speed_zscore'] = (df_processed['pc_speed'] - df_processed['pc_speed'].mean()) / df_processed['pc_speed'].std()
+    df_processed['steering_zscore'] = (df_processed['pc_steering'] - df_processed['pc_steering'].mean()) / df_processed['pc_steering'].std()
+    
+    return df_processed
+
+def preprocess_features(df, feature_cols):
+    """Preprocess features for ML"""
+    # Remove any missing values
+    df_clean = df[feature_cols].dropna()
+    valid_indices = df_clean.index
+    
+    # Scale features
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(df_clean)
+    
+    return X_scaled, scaler, valid_indices
+
+def ensemble_anomaly_detection(X_scaled, contamination=0.05):
+    """Run ensemble anomaly detection"""
+    # Isolation Forest
+    iso_forest = IsolationForest(contamination=contamination, random_state=42)
+    iso_labels = iso_forest.fit_predict(X_scaled)
+    iso_scores = iso_forest.score_samples(X_scaled)
+    
+    # Local Outlier Factor
+    lof = LocalOutlierFactor(contamination=contamination, novelty=False)
+    lof_labels = lof.fit_predict(X_scaled)
+    lof_scores = lof.negative_outlier_factor_
+    
+    # Ensemble: both methods agree
+    ensemble_labels = np.where((iso_labels == -1) & (lof_labels == -1), -1, 1)
+    
+    return {
+        'ensemble': ensemble_labels,
+        'iso_scores': iso_scores,
+        'lof_scores': lof_scores,
+        'iso_labels': iso_labels,
+        'lof_labels': lof_labels
+    }
+
 def main():
     # Header
     st.markdown('<h1 class="main-header">🚗 SDV Anomaly Detection Dashboard</h1>', unsafe_allow_html=True)
@@ -97,13 +205,9 @@ def main():
                 st.sidebar.error(f"Error loading file: {str(e)}")
                 return
     else:
-        # Load sample data
-        try:
-            df = pd.read_csv("realistic_driving_data.csv")
-            st.sidebar.info(f"📊 Sample data loaded: {df.shape[0]} rows")
-        except FileNotFoundError:
-            st.error("Sample data file not found. Please upload a CSV file.")
-            return
+        # Generate sample data
+        df = generate_sample_data(1000)
+        st.sidebar.info(f"📊 Sample data generated: {df.shape[0]} rows")
     
     if df is None:
         st.info("👆 Please select a data source from the sidebar to begin analysis.")
@@ -179,16 +283,8 @@ def run_anomaly_detection(df, contamination, use_enhanced_features):
             df_processed = feature_engineering(df)
             feature_cols = ['pc_speed', 'pc_steering', 'pc_brake', 'speed_category_encoded',
                            'aggressive_steering', 'hard_braking', 'speed_steering_ratio', 
-                           'brake_intensity']
-            
-            # Add available rolling and zscore features
-            rolling_features = [col for col in df_processed.columns if 'rolling' in col]
-            zscore_features = [col for col in df_processed.columns if 'zscore' in col]
-            feature_cols.extend(rolling_features)
-            feature_cols.extend(zscore_features)
-            
-            # Remove any missing features
-            feature_cols = [f for f in feature_cols if f in df_processed.columns]
+                           'brake_intensity', 'speed_rolling_mean', 'speed_rolling_std',
+                           'speed_zscore', 'steering_zscore']
         else:
             df_processed = df.copy()
             feature_cols = ['pc_speed', 'pc_steering', 'pc_brake']
@@ -220,7 +316,6 @@ def run_anomaly_detection(df, contamination, use_enhanced_features):
 def display_results(results):
     """Display analysis results"""
     df_results = results['df_results']
-    detection_results = results['detection_results']
     
     st.success("✅ Anomaly detection completed successfully!")
     
@@ -277,36 +372,6 @@ def display_results(results):
     
     with tab4:
         show_top_anomalies(df_results)
-    
-    # Download results
-    st.subheader("💾 Download Results")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # CSV download
-        csv_buffer = io.StringIO()
-        output_cols = ['pc_speed', 'pc_steering', 'pc_brake', 'anomaly_label', 'iso_score', 'lof_score']
-        df_results[output_cols].to_csv(csv_buffer, index=False)
-        
-        st.download_button(
-            label="📄 Download CSV Results",
-            data=csv_buffer.getvalue(),
-            file_name=f"anomaly_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )
-    
-    with col2:
-        # JSON download
-        json_buffer = io.StringIO()
-        df_results[output_cols].to_json(json_buffer, orient='records', indent=2)
-        
-        st.download_button(
-            label="📋 Download JSON Results",
-            data=json_buffer.getvalue(),
-            file_name=f"anomaly_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json"
-        )
 
 def create_scatter_plots(df_results):
     """Create interactive scatter plots"""
@@ -358,14 +423,15 @@ def create_time_series_plot(df_results):
     
     # Highlight anomalies
     anomaly_indices = df_results[df_results['anomaly'] == -1]['time_index']
-    anomaly_speeds = df_results[df_results['anomaly'] == -1]['pc_speed']
-    
-    fig.add_trace(
-        go.Scatter(x=anomaly_indices, y=anomaly_speeds,
-                  mode='markers', name='Speed Anomalies', 
-                  marker=dict(color='red', size=8)),
-        row=1, col=1
-    )
+    if len(anomaly_indices) > 0:
+        anomaly_speeds = df_results[df_results['anomaly'] == -1]['pc_speed']
+        
+        fig.add_trace(
+            go.Scatter(x=anomaly_indices, y=anomaly_speeds,
+                      mode='markers', name='Speed Anomalies', 
+                      marker=dict(color='red', size=8)),
+            row=1, col=1
+        )
     
     # Steering
     fig.add_trace(
@@ -374,13 +440,14 @@ def create_time_series_plot(df_results):
         row=2, col=1
     )
     
-    anomaly_steering = df_results[df_results['anomaly'] == -1]['pc_steering']
-    fig.add_trace(
-        go.Scatter(x=anomaly_indices, y=anomaly_steering,
-                  mode='markers', name='Steering Anomalies',
-                  marker=dict(color='red', size=8)),
-        row=2, col=1
-    )
+    if len(anomaly_indices) > 0:
+        anomaly_steering = df_results[df_results['anomaly'] == -1]['pc_steering']
+        fig.add_trace(
+            go.Scatter(x=anomaly_indices, y=anomaly_steering,
+                      mode='markers', name='Steering Anomalies',
+                      marker=dict(color='red', size=8)),
+            row=2, col=1
+        )
     
     # Brake
     fig.add_trace(
@@ -389,13 +456,14 @@ def create_time_series_plot(df_results):
         row=3, col=1
     )
     
-    anomaly_brake = df_results[df_results['anomaly'] == -1]['pc_brake']
-    fig.add_trace(
-        go.Scatter(x=anomaly_indices, y=anomaly_brake,
-                  mode='markers', name='Brake Anomalies',
-                  marker=dict(color='red', size=8)),
-        row=3, col=1
-    )
+    if len(anomaly_indices) > 0:
+        anomaly_brake = df_results[df_results['anomaly'] == -1]['pc_brake']
+        fig.add_trace(
+            go.Scatter(x=anomaly_indices, y=anomaly_brake,
+                      mode='markers', name='Brake Anomalies',
+                      marker=dict(color='red', size=8)),
+            row=3, col=1
+        )
     
     fig.update_layout(height=600, showlegend=True)
     fig.update_xaxes(title_text="Time Index", row=3, col=1)
@@ -408,7 +476,6 @@ def create_score_distribution(df_results):
     col1, col2 = st.columns(2)
     
     with col1:
-        # Isolation Forest scores
         fig1 = px.histogram(
             df_results, 
             x='iso_score',
@@ -421,7 +488,6 @@ def create_score_distribution(df_results):
         st.plotly_chart(fig1, use_container_width=True)
     
     with col2:
-        # LOF scores
         fig2 = px.histogram(
             df_results, 
             x='lof_score',
@@ -478,24 +544,6 @@ def show_top_anomalies(df_results):
     else:
         st.info("No anomalies detected with current parameters.")
 
-def generate_report(results):
-    """Generate a simple text report"""
-    df_results = results['df_results']
-    
-    report = f"""
-SDV Anomaly Detection Report
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-Summary:
-- Total Samples: {len(df_results)}
-- Anomalies Detected: {np.sum(df_results['anomaly'] == -1)}
-- Normal Samples: {np.sum(df_results['anomaly'] == 1)}
-- Detection Rate: {(np.sum(df_results['anomaly'] == -1) / len(df_results)) * 100:.2f}%
-
-Top 5 Anomalous Samples:
-{df_results[df_results['anomaly'] == -1].nsmallest(5, 'iso_score')[['pc_speed', 'pc_steering', 'pc_brake', 'iso_score']].to_string() if len(df_results[df_results['anomaly'] == -1]) > 0 else 'No anomalies detected'}
-"""
-    return report
-
+# FIXED: Proper main function call
 if __name__ == "__main__":
     main()
