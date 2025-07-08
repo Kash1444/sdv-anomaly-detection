@@ -478,5 +478,24 @@ def show_top_anomalies(df_results):
     else:
         st.info("No anomalies detected with current parameters.")
 
+def generate_report(results):
+    """Generate a simple text report"""
+    df_results = results['df_results']
+    
+    report = f"""
+SDV Anomaly Detection Report
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+Summary:
+- Total Samples: {len(df_results)}
+- Anomalies Detected: {np.sum(df_results['anomaly'] == -1)}
+- Normal Samples: {np.sum(df_results['anomaly'] == 1)}
+- Detection Rate: {(np.sum(df_results['anomaly'] == -1) / len(df_results)) * 100:.2f}%
+
+Top 5 Anomalous Samples:
+{df_results[df_results['anomaly'] == -1].nsmallest(5, 'iso_score')[['pc_speed', 'pc_steering', 'pc_brake', 'iso_score']].to_string() if len(df_results[df_results['anomaly'] == -1]) > 0 else 'No anomalies detected'}
+"""
+    return report
+
 if __name__ == "__main__":
     main()
