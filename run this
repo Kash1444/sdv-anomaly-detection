@@ -1,1 +1,2 @@
+cd "c:\Users\Owner\Desktop\Machine Learning Journey\TATA\sdv_ml_project"
 python -m streamlit run streamlit_dashboard.py
